@@ -173,6 +173,7 @@ const EXPORT_COLS = [
 
 const ALL_FIELDS = SECTIONS.flatMap(s => s.fields);
 const LS_KEY = "ropa_v2_entries";
+const SHEET_URL = "https://script.google.com/macros/s/AKfycbzVV4g1LYwyN8ya9g_IFJe9dvfEJeIEcihi4VfgeUL1L6Cjlv-izTtaT787Nqr7Kv-L/exec";
 
 function uid() { return "e" + Math.random().toString(36).slice(2, 9) + Date.now().toString(36); }
 function isEmptyVal(v) { return Array.isArray(v) ? v.length === 0 : !String(v || "").trim(); }
@@ -474,9 +475,9 @@ const App = {
   state: { entries: [], view: "register", mode: "wizard", currentId: null, step: 0, query: "", savedAt: null, guideOpen: false, confirmMsg: null, confirmAction: null, backupNudge: false },
   nudgeT: null,
 
-  init() {
-    let entries = null;
-    try { const raw = localStorage.getItem(LS_KEY); if (raw) entries = JSON.parse(raw); } catch (e) {}
+  syncing: false, lastRemoteJson: null,
+
+  normalize(entries) {
     if (!Array.isArray(entries) || !entries.length) entries = seed();
     else {
       const have = new Set(entries.map(en => en.ref));
@@ -484,14 +485,46 @@ const App = {
       if (missing.length) entries = entries.concat(missing);
     }
     entries.forEach(en => { ALL_FIELDS.forEach(f => { if (en[f.key] == null) en[f.key] = f.type === "checks" ? [] : ""; }); if (!en._id) en._id = uid(); });
+    return entries;
+  },
+
+  init() {
+    let entries = null;
+    try { const raw = localStorage.getItem(LS_KEY); if (raw) entries = JSON.parse(raw); } catch (e) {}
+    entries = this.normalize(entries);
     this.state.entries = entries;
     try { localStorage.setItem(LS_KEY, JSON.stringify(entries)); } catch (e) {}
     this.render();
+    this.fetchRemote(true);
+    setInterval(() => this.fetchRemote(false), 8000);
   },
+
+  fetchRemote(applyIfEmpty) {
+    if (!SHEET_URL) return;
+    fetch(SHEET_URL, { cache: "no-store" }).then(r => r.json()).then(data => {
+      const json = JSON.stringify(data);
+      if (json === this.lastRemoteJson) return;
+      this.lastRemoteJson = json;
+      if (this.state.view === "edit" && !applyIfEmpty) return; // avoid clobbering active editing mid-typing
+      const entries = this.normalize(data);
+      this.state.entries = entries;
+      try { localStorage.setItem(LS_KEY, JSON.stringify(entries)); } catch (e) {}
+      this.render();
+    }).catch(() => {});
+  },
+
+  pushRemote(entries) {
+    if (!SHEET_URL) return;
+    const json = JSON.stringify(entries);
+    this.lastRemoteJson = json;
+    fetch(SHEET_URL, { method: "POST", body: json }).catch(() => {});
+  },
+
   setState(patch) { Object.assign(this.state, patch); this.render(); },
   persist(entries) {
     try { localStorage.setItem(LS_KEY, JSON.stringify(entries)); } catch (e) {}
     this.setState({ entries, savedAt: new Date() });
+    this.pushRemote(entries);
     this.queueBackupNudge();
   },
   queueBackupNudge() { clearTimeout(this.nudgeT); this.nudgeT = setTimeout(() => this.setState({ backupNudge: true }), 1500); },
@@ -536,6 +569,7 @@ const App = {
     const entries = this.state.entries.concat([en]);
     try { localStorage.setItem(LS_KEY, JSON.stringify(entries)); } catch (e) {}
     this.setState({ entries, currentId: en._id, view: "edit", mode: "wizard", step: 0, savedAt: new Date() });
+    this.pushRemote(entries);
     this.queueBackupNudge();
   },
   duplicateEntry() {
@@ -544,6 +578,7 @@ const App = {
     const entries = this.state.entries.concat([copy]);
     try { localStorage.setItem(LS_KEY, JSON.stringify(entries)); } catch (e) {}
     this.setState({ entries, currentId: copy._id, savedAt: new Date() });
+    this.pushRemote(entries);
     this.queueBackupNudge();
   },
   askConfirm(msg, action) { this.setState({ confirmMsg: msg, confirmAction: action }); },
@@ -659,6 +694,7 @@ const App = {
       <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:#bcd0e4">
         <span style="width:7px;height:7px;border-radius:50%;background:#5fd0a0;display:inline-block"></span>
         <span>${esc(this.saveLabel())}</span>
+        <span style="margin-left:4px;padding:1px 7px;border-radius:3px;background:#0e2440;color:#7fd8b0;font-size:11px">Google Sheets</span>
       </div>
       <button type="button" data-act="toggleGuide" style="padding:7px 13px;border:1px solid #2a4a72;background:#0e2440;color:#cfe0f0;border-radius:6px;cursor:pointer;font-size:13px">คู่มืออ้างอิง PDPA</button>
       <div style="display:flex;gap:2px;background:#0e2440;border-radius:7px;padding:3px">
